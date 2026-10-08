@@ -1,0 +1,70 @@
+#!/bin/sh
+# squirrelscan Homebrew shim.
+#
+# This file is all Homebrew installs. It is not the squirrel CLI: on first run
+# it runs the regular squirrelscan installer, which puts the real binary in
+# ~/.squirrel/releases and a symlink in ~/.local/bin (the same layout as
+# curl | bash). From then on it hands every call to that managed binary, which
+# updates itself with `squirrel self update`. Homebrew never owns or upgrades
+# the real CLI.
+#
+# `brew uninstall --cask squirrel` runs this file with the hidden argument
+# __brew_uninstall, which removes the managed install as well.
+
+set -u
+
+INSTALL_URL="${SQUIRREL_INSTALL_URL:-https://install.squirrelscan.com/install.sh}"
+bin_dir="${SQUIRREL_BIN_DIR:-$HOME/.local/bin}"
+managed="$bin_dir/squirrel"
+releases="${SQUIRREL_HOME:-$HOME/.squirrel}/releases"
+
+# Resolve a path through symlinks so we never exec ourselves.
+resolve() {
+  p="$1"
+  while [ -L "$p" ]; do
+    l=$(readlink "$p")
+    case "$l" in
+      /*) p="$l" ;;
+      *) p="$(dirname "$p")/$l" ;;
+    esac
+  done
+  printf '%s\n' "$p"
+}
+
+self_path=$(resolve "$0")
+
+managed_is_real() {
+  [ -x "$managed" ] || return 1
+  [ "$(resolve "$managed")" != "$self_path" ] || return 1
+}
+
+if [ "${1:-}" = "__brew_uninstall" ]; then
+  if managed_is_real; then
+    # Newer releases own their uninstall; fall back to removing the managed
+    # layout directly. Settings and credentials under ~/.squirrel are kept.
+    "$managed" self uninstall --yes >/dev/null 2>&1 && exit 0
+    case "$(resolve "$managed")" in
+      "$releases"/*) rm -f "$managed" ;;
+    esac
+  fi
+  [ -d "$releases" ] && rm -rf "$releases"
+  exit 0
+fi
+
+if ! managed_is_real; then
+  echo "squirrelscan: first run, installing the CLI to $bin_dir (same as the curl installer)..." >&2
+  if ! command -v curl >/dev/null 2>&1 || ! command -v bash >/dev/null 2>&1; then
+    echo "squirrelscan: the bootstrap needs curl and bash" >&2
+    exit 1
+  fi
+  if ! curl -fsSL "$INSTALL_URL" | bash >&2; then
+    echo "squirrelscan: install failed; run it by hand: curl -fsSL $INSTALL_URL | bash" >&2
+    exit 1
+  fi
+  if ! managed_is_real; then
+    echo "squirrelscan: installed, but $managed was not found; check that $bin_dir is on your PATH" >&2
+    exit 1
+  fi
+fi
+
+exec "$managed" "$@"
